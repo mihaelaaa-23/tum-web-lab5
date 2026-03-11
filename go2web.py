@@ -3,7 +3,7 @@
 import sys
 import argparse
 import socket
-
+import re
 
 def build_parser():
     parser = argparse.ArgumentParser(
@@ -101,6 +101,20 @@ def decode_chunked(data):
         data = data[line_end + 2 + chunk_size + 2:]
     return result
 
+def strip_html(html):
+    # Remove <script> and <style> blocks entirely
+    html = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE)
+    # Replace block-level tags with newlines for readability
+    html = re.sub(r"<(br|p|div|h[1-6]|li|tr)[^>]*>", "\n", html, flags=re.IGNORECASE)
+    # Strip all remaining tags
+    html = re.sub(r"<[^>]+>", "", html)
+    # Decode common HTML entities
+    html = html.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    html = html.replace("&nbsp;", " ").replace("&quot;", '"').replace("&#39;", "'")
+    # Collapse blank lines
+    html = re.sub(r"\n{3,}", "\n\n", html)
+    return html.strip()
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
@@ -112,8 +126,8 @@ def main():
     if args.u:
         raw = fetch_url(args.u)
         status, headers, body = parse_response(raw)
-        print(f"Status: {status}")
-        print(body)
+        print(f"Status: {status}\n")
+        print(strip_html(body))
 
     if args.s:
         term = " ".join(args.s)
