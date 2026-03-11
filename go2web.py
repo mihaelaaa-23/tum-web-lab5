@@ -65,6 +65,42 @@ def fetch_url(url):
     sock.close()
     return response.decode("utf-8", errors="replace")
 
+def parse_response(raw):
+    # Split headers and body on the blank line
+    if "\r\n\r\n" in raw:
+        headers_part, body = raw.split("\r\n\r\n", 1)
+    else:
+        headers_part, body = raw, ""
+
+    header_lines = headers_part.split("\r\n")
+    status_line = header_lines[0]
+    headers = {}
+    for line in header_lines[1:]:
+        if ":" in line:
+            key, _, value = line.partition(":")
+            headers[key.strip().lower()] = value.strip()
+
+    # Handle chunked transfer encoding
+    if headers.get("transfer-encoding") == "chunked":
+        body = decode_chunked(body)
+
+    return status_line, headers, body
+
+
+def decode_chunked(data):
+    result = ""
+    while data:
+        # Each chunk: hex size line, then data
+        line_end = data.find("\r\n")
+        if line_end == -1:
+            break
+        chunk_size = int(data[:line_end], 16)
+        if chunk_size == 0:
+            break
+        result += data[line_end + 2: line_end + 2 + chunk_size]
+        data = data[line_end + 2 + chunk_size + 2:]
+    return result
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
@@ -75,7 +111,9 @@ def main():
 
     if args.u:
         raw = fetch_url(args.u)
-        print(raw)          # prints everything for now — headers + body
+        status, headers, body = parse_response(raw)
+        print(f"Status: {status}")
+        print(body)
 
     if args.s:
         term = " ".join(args.s)
