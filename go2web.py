@@ -2,6 +2,7 @@
 
 import sys
 import argparse
+import socket
 
 
 def build_parser():
@@ -31,6 +32,39 @@ Examples:
     print(help_text)
 
 
+def fetch_url(url):
+    # Parse URL manually — no urllib
+    if url.startswith("https://"):
+        print("HTTPS not supported yet (requires SSL). Use http://")
+        sys.exit(1)
+
+    url = url.removeprefix("http://")
+    host, _, path = url.partition("/")
+    path = "/" + path if path else "/"
+
+    # Open raw TCP socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect((host, 80))
+
+    request = (
+        f"GET {path} HTTP/1.1\r\n"
+        f"Host: {host}\r\n"
+        f"Connection: close\r\n"
+        f"\r\n"
+    )
+    sock.sendall(request.encode())
+
+    # Read full response
+    response = b""
+    while True:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        response += chunk
+
+    sock.close()
+    return response.decode("utf-8", errors="replace")
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
@@ -40,7 +74,8 @@ def main():
         sys.exit(0)
 
     if args.u:
-        print(f"[stub] Would fetch: {args.u}")
+        raw = fetch_url(args.u)
+        print(raw)          # prints everything for now — headers + body
 
     if args.s:
         term = " ".join(args.s)
