@@ -6,6 +6,8 @@ import socket
 import re
 import ssl
 
+_cache = {}
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="go2web",
@@ -34,6 +36,10 @@ Examples:
 
 
 def fetch_url(url, max_redirects=5):
+    if url in _cache:
+        print(f"[cache hit] {url}", file=sys.stderr)
+        return _cache[url]
+    
     for _ in range(max_redirects):
         if url.startswith("https://"):
             use_ssl = True
@@ -90,6 +96,7 @@ def fetch_url(url, max_redirects=5):
                 url = base + host + url
             continue
 
+        _cache[url] = raw
         return raw
 
     print(f"Error: too many redirects")
