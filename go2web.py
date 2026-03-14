@@ -72,7 +72,7 @@ def fetch_url(url, max_redirects=5, extra_headers=None):
             f"Host: {host}\r\n"
             f"Connection: close\r\n"
             f"User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n"
-            f"Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
+            f"Accept: application/json, text/html;q=0.9, */*;q=0.8\r\n"
             f"Accept-Language: en-US,en;q=0.9\r\n"
             f"Accept-Encoding: identity\r\n"
         )
@@ -238,7 +238,17 @@ def main():
             raw = fetch_url(args.u)
             status, headers, body = parse_response(raw)
             print(f"Status: {status}\n")
-            print(strip_html(body))
+            content_type = headers.get("content-type", "")
+            if "application/json" in content_type:
+                # Pretty-print JSON
+                import json
+                try:
+                    parsed = json.loads(body)
+                    print(json.dumps(parsed, indent=2))
+                except json.JSONDecodeError:
+                    print(body)
+            else:
+                print(strip_html(body))
         except ConnectionRefusedError:
             print(f"Error: connection refused for {args.u}")
             sys.exit(1)
