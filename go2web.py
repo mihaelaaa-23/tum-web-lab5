@@ -33,7 +33,6 @@ Examples:
 
 
 def fetch_url(url):
-    # Parse URL manually — no urllib
     if url.startswith("https://"):
         print("HTTPS not supported yet (requires SSL). Use http://")
         sys.exit(1)
@@ -42,9 +41,14 @@ def fetch_url(url):
     host, _, path = url.partition("/")
     path = "/" + path if path else "/"
 
-    # Open raw TCP socket
+    if ":" in host:
+        host, port_str = host.rsplit(":", 1)
+        port = int(port_str)
+    else:
+        port = 80
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.connect((host, 80))
+    sock.connect((host, port))
 
     request = (
         f"GET {path} HTTP/1.1\r\n"
@@ -54,7 +58,6 @@ def fetch_url(url):
     )
     sock.sendall(request.encode())
 
-    # Read full response
     response = b""
     while True:
         chunk = sock.recv(4096)
@@ -124,10 +127,20 @@ def main():
         sys.exit(0)
 
     if args.u:
-        raw = fetch_url(args.u)
-        status, headers, body = parse_response(raw)
-        print(f"Status: {status}\n")
-        print(strip_html(body))
+        try:
+            raw = fetch_url(args.u)
+            status, headers, body = parse_response(raw)
+            print(f"Status: {status}\n")
+            print(strip_html(body))
+        except ConnectionRefusedError:
+            print(f"Error: connection refused for {args.u}")
+            sys.exit(1)
+        except socket.gaierror as e:
+            print(f"Error: could not resolve host — {e}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"Error: {e}")
+            sys.exit(1)
 
     if args.s:
         term = " ".join(args.s)
