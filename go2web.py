@@ -33,51 +33,67 @@ Examples:
     print(help_text)
 
 
-def fetch_url(url):
-    if url.startswith("https://"):
-        use_ssl = True
-        url = url.removeprefix("https://")
-        default_port = 443
-    else:
-        use_ssl = False
-        url = url.removeprefix("http://")
-        default_port = 80
+def fetch_url(url, max_redirects=5):
+    for _ in range(max_redirects):
+        if url.startswith("https://"):
+            use_ssl = True
+            url_stripped = url.removeprefix("https://")
+            default_port = 443
+        else:
+            use_ssl = False
+            url_stripped = url.removeprefix("http://")
+            default_port = 80
 
-    host, _, path = url.partition("/")
-    path = "/" + path if path else "/"
+        host, _, path = url_stripped.partition("/")
+        path = "/" + path if path else "/"
 
-    if ":" in host:
-        host, port_str = host.rsplit(":", 1)
-        port = int(port_str)
-    else:
-        port = default_port
+        if ":" in host:
+            host, port_str = host.rsplit(":", 1)
+            port = int(port_str)
+        else:
+            port = default_port
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-    if use_ssl:
-        context = ssl.create_default_context()
-        sock = context.wrap_socket(sock, server_hostname=host)
+        if use_ssl:
+            context = ssl.create_default_context()
+            sock = context.wrap_socket(sock, server_hostname=host)
 
-    sock.connect((host, port))
+        sock.connect((host, port))
 
-    request = (
-        f"GET {path} HTTP/1.1\r\n"
-        f"Host: {host}\r\n"
-        f"Connection: close\r\n"
-        f"User-Agent: Mozilla/5.0\r\n"
-        f"\r\n"
-    )
-    sock.sendall(request.encode())
+        request = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            f"Connection: close\r\n"
+            f"User-Agent: Mozilla/5.0\r\n"
+            f"\r\n"
+        )
+        sock.sendall(request.encode())
 
-    response = b""
-    while True:
-        chunk = sock.recv(4096)
-        if not chunk:
-            break
-        response += chunk
+        response = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+        sock.close()
 
-    sock.close()
-    return response.decode("utf-8", errors="replace")
+        raw = response.decode("utf-8", errors="replace")
+        status_line, headers, body = parse_response(raw)
+        status_code = int(status_line.split()[1])
+
+        if status_code in (301, 302, 303, 307, 308) and "location" in headers:
+            url = headers["location"]
+            # Handle relative redirects
+            if url.startswith("/"):
+                base = "https://" if use_ssl else "http://"
+                url = base + host + url
+            continue
+
+        return raw
+
+    print(f"Error: too many redirects")
+    sys.exit(1)
 
 def parse_response(raw):
     # Split headers and body on the blank line
