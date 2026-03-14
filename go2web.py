@@ -4,6 +4,7 @@ import sys
 import argparse
 import socket
 import re
+import ssl
 
 def build_parser():
     parser = argparse.ArgumentParser(
@@ -34,10 +35,14 @@ Examples:
 
 def fetch_url(url):
     if url.startswith("https://"):
-        print("HTTPS not supported yet (requires SSL). Use http://")
-        sys.exit(1)
+        use_ssl = True
+        url = url.removeprefix("https://")
+        default_port = 443
+    else:
+        use_ssl = False
+        url = url.removeprefix("http://")
+        default_port = 80
 
-    url = url.removeprefix("http://")
     host, _, path = url.partition("/")
     path = "/" + path if path else "/"
 
@@ -45,15 +50,21 @@ def fetch_url(url):
         host, port_str = host.rsplit(":", 1)
         port = int(port_str)
     else:
-        port = 80
+        port = default_port
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+    if use_ssl:
+        context = ssl.create_default_context()
+        sock = context.wrap_socket(sock, server_hostname=host)
+
     sock.connect((host, port))
 
     request = (
         f"GET {path} HTTP/1.1\r\n"
         f"Host: {host}\r\n"
         f"Connection: close\r\n"
+        f"User-Agent: Mozilla/5.0\r\n"
         f"\r\n"
     )
     sock.sendall(request.encode())
@@ -93,11 +104,18 @@ def parse_response(raw):
 def decode_chunked(data):
     result = ""
     while data:
-        # Each chunk: hex size line, then data
         line_end = data.find("\r\n")
         if line_end == -1:
             break
-        chunk_size = int(data[:line_end], 16)
+        size_str = data[:line_end].strip()
+        if not size_str:
+            data = data[2:]
+            continue
+        try:
+            chunk_size = int(size_str, 16)
+        except ValueError:
+            # Not actually chunked encoding — return data as-is
+            return data
         if chunk_size == 0:
             break
         result += data[line_end + 2: line_end + 2 + chunk_size]
@@ -117,6 +135,11 @@ def strip_html(html):
     # Collapse blank lines
     html = re.sub(r"\n{3,}", "\n\n", html)
     return html.strip()
+
+def search(term):
+    query = term.replace(" ", "+")
+    url = f"https://html.duckduckgo.com/html/?q={query}"
+    return fetch_url(url)
 
 def main():
     parser = build_parser()
@@ -144,7 +167,10 @@ def main():
 
     if args.s:
         term = " ".join(args.s)
-        print(f"[stub] Would search for: {term}")
+        raw = search(term)
+        status, headers, body = parse_response(raw)
+        print(f"Status: {status}\n")
+        print(body[:3000])  # raw dump for now — step 8 will extract results
 
 
 if __name__ == "__main__":
