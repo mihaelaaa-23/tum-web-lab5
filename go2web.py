@@ -35,11 +35,11 @@ Examples:
     print(help_text)
 
 
-def fetch_url(url, max_redirects=5):
+def fetch_url(url, max_redirects=5, extra_headers=None):
     if url in _cache:
         print(f"[cache hit] {url}", file=sys.stderr)
         return _cache[url]
-    
+
     for _ in range(max_redirects):
         if url.startswith("https://"):
             use_ssl = True
@@ -71,9 +71,16 @@ def fetch_url(url, max_redirects=5):
             f"GET {path} HTTP/1.1\r\n"
             f"Host: {host}\r\n"
             f"Connection: close\r\n"
-            f"User-Agent: Mozilla/5.0\r\n"
-            f"\r\n"
+            f"User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n"
+            f"Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
+            f"Accept-Language: en-US,en;q=0.9\r\n"
+            f"Accept-Encoding: identity\r\n"
         )
+        if extra_headers:
+            for k, v in extra_headers.items():
+                request += f"{k}: {v}\r\n"
+        request += "\r\n"
+
         sock.sendall(request.encode())
 
         response = b""
@@ -90,7 +97,6 @@ def fetch_url(url, max_redirects=5):
 
         if status_code in (301, 302, 303, 307, 308) and "location" in headers:
             url = headers["location"]
-            # Handle relative redirects
             if url.startswith("/"):
                 base = "https://" if use_ssl else "http://"
                 url = base + host + url
@@ -99,11 +105,11 @@ def fetch_url(url, max_redirects=5):
         _cache[url] = raw
         return raw
 
-    print(f"Error: too many redirects")
+    print("Error: too many redirects")
     sys.exit(1)
 
+
 def parse_response(raw):
-    # Split headers and body on the blank line
     if "\r\n\r\n" in raw:
         headers_part, body = raw.split("\r\n\r\n", 1)
     else:
@@ -117,15 +123,16 @@ def parse_response(raw):
             key, _, value = line.partition(":")
             headers[key.strip().lower()] = value.strip()
 
-    # Handle chunked transfer encoding
     if headers.get("transfer-encoding") == "chunked" or re.match(r'^[0-9a-fA-F]+\r\n', body):
         body = decode_chunked(body)
 
     return status_line, headers, body
 
+
 def decode_entities(text):
     text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
     text = text.replace("&nbsp;", " ").replace("&quot;", '"').replace("&#39;", "'")
+    text = text.replace("&ndash;", "–").replace("&mdash;", "—").replace("&rsquo;", "'")
     text = re.sub(r'&#x([0-9A-Fa-f]+);', lambda m: chr(int(m.group(1), 16)), text)
     text = re.sub(r'&#(\d+);', lambda m: chr(int(m.group(1))), text)
     return text
@@ -134,20 +141,25 @@ def parse_search_results(html):
     results = []
     seen_urls = set()
 
-    blocks = re.findall(r'<div[^>]+class="[^"]*algo[^"]*"[^>]*>(.*?)</div>\s*</div>\s*</div>', html, re.DOTALL)
+    titles = re.findall(
+        r'class="[^"]*compTitle[^"]*"[^>]*>.*?<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
+        html, re.DOTALL
+    )
+    snippets = re.findall(
+        r'class="[^"]*compText[^"]*"[^>]*>(.*?)</(?:p|div|span)>',
+        html, re.DOTALL
+    )
 
-    for block in blocks:
-        title_match = re.search(r'<h3[^>]*>.*?<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block, re.DOTALL)
-        snippet_match = re.search(r'<p[^>]*>(.*?)</p>', block, re.DOTALL)
-
-        if not title_match:
+    snippet_index = 0
+    for href, title in titles:
+        title = decode_entities(re.sub(r'<[^>]+>', '', title).strip())
+        title = re.sub(r'^.+?(?:›|·|\|)\s*', '', title).strip()
+        title = re.sub(r'^[a-z0-9›·\s/_-]+?(?=[A-Z])', '', title).strip()
+        if re.match(r'^[A-Z][a-z]+\.[a-z]+', title):
+            title = re.sub(r'^.*?(?=[A-Z][^a-z]{0,3}[a-z])', '', title).strip()
+        if not title or title.lower() == "ads":
             continue
 
-        href = title_match.group(1)
-        title = decode_entities(re.sub(r'<[^>]+>', '', title_match.group(2)).strip())
-        title = re.sub(r'^.*?›\s*', '', title).strip()
-
-        # Extract real URL from Yahoo redirect
         url_match = re.search(r'RU=([^/]+)', href)
         if url_match:
             import urllib.parse
@@ -155,13 +167,17 @@ def parse_search_results(html):
         else:
             url = href
 
-        # Skip Yahoo-internal URLs and duplicates
         if not url.startswith("http") or "yahoo.com" in url or url in seen_urls:
             continue
 
+        # Skip ad domains — they appear before organic results
+        if any(ad in url for ad in ["googlesyndication", "doubleclick", "bing.com/aclick"]):
+            continue
+
         snippet = ""
-        if snippet_match:
-            snippet = decode_entities(re.sub(r'<[^>]+>', '', snippet_match.group(1)).strip())
+        if snippet_index < len(snippets):
+            snippet = decode_entities(re.sub(r'<[^>]+>', '', snippets[snippet_index]).strip())
+            snippet_index += 1
 
         seen_urls.add(url)
         results.append((title, url, snippet))
@@ -184,57 +200,30 @@ def decode_chunked(data):
         try:
             chunk_size = int(size_str, 16)
         except ValueError:
-            return data  # not chunked, return as-is
+            return data
         if chunk_size == 0:
             break
         result += data[line_end + 2: line_end + 2 + chunk_size]
         data = data[line_end + 2 + chunk_size + 2:]
     return result
 
+
 def strip_html(html):
     html = re.sub(r'^[0-9a-fA-F]+\s*$', '', html, flags=re.MULTILINE)
-    # Remove <script> and <style> blocks entirely
     html = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE)
-    # Replace block-level tags with newlines for readability
     html = re.sub(r"<(br|p|div|h[1-6]|li|tr)[^>]*>", "\n", html, flags=re.IGNORECASE)
-    # Strip all remaining tags
     html = re.sub(r"<[^>]+>", "", html)
-    # Decode common HTML entities
     html = html.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
     html = html.replace("&nbsp;", " ").replace("&quot;", '"').replace("&#39;", "'")
-    # Collapse blank lines
     html = re.sub(r"\n{3,}", "\n\n", html)
     return html.strip()
 
+
 def search(term):
     query = term.replace(" ", "+")
-    host = "search.yahoo.com"
-    path = f"/search?p={query}&ei=UTF-8"
+    url = f"https://search.yahoo.com/search?p={query}&ei=UTF-8&nojs=1"
+    return fetch_url(url, extra_headers={"Cookie": "sB=v=1&pstaid=undefined"})
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    context = ssl.create_default_context()
-    sock = context.wrap_socket(sock, server_hostname=host)
-    sock.connect((host, 443))
-
-    request = (
-        f"GET {path} HTTP/1.1\r\n"
-        f"Host: {host}\r\n"
-        f"Connection: close\r\n"
-        f"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n"
-        f"Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n"
-        f"Accept-Language: en-US,en;q=0.5\r\n"
-        f"\r\n"
-    )
-    sock.sendall(request.encode())
-
-    response = b""
-    while True:
-        chunk = sock.recv(4096)
-        if not chunk:
-            break
-        response += chunk
-    sock.close()
-    return response.decode("utf-8", errors="replace")
 
 def main():
     parser = build_parser()
