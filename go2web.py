@@ -100,6 +100,36 @@ def parse_response(raw):
 
     return status_line, headers, body
 
+def decode_entities(text):
+    text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    text = text.replace("&nbsp;", " ").replace("&quot;", '"').replace("&#39;", "'")
+    text = re.sub(r'&#x([0-9A-Fa-f]+);', lambda m: chr(int(m.group(1), 16)), text)
+    text = re.sub(r'&#(\d+);', lambda m: chr(int(m.group(1))), text)
+    return text
+
+def parse_search_results(html):
+    results = []
+
+    # Extract each result block
+    titles = re.findall(r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, re.DOTALL)
+    snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
+
+    for i, (href, title) in enumerate(titles[:10]):
+        # Decode the real URL from uddg= parameter
+        url_match = re.search(r'uddg=(https?[^&]+)', href)
+        url = url_match.group(1) if url_match else href
+        # URL-decode %2F etc.
+        url = re.sub(r'%([0-9A-Fa-f]{2})', lambda m: chr(int(m.group(1), 16)), url)
+
+        title = decode_entities(re.sub(r'<[^>]+>', '', title).strip())
+
+        snippet = ""
+        if i < len(snippets):
+            snippet = decode_entities(re.sub(r'<[^>]+>', '', snippets[i]).strip())
+
+        results.append((title, url, snippet))
+
+    return results
 
 def decode_chunked(data):
     result = ""
@@ -169,8 +199,13 @@ def main():
         term = " ".join(args.s)
         raw = search(term)
         status, headers, body = parse_response(raw)
-        print(f"Status: {status}\n")
-        print(body[:3000])  # raw dump for now — step 8 will extract results
+        results = parse_search_results(body)
+        for i, (title, url, snippet) in enumerate(results, 1):
+            print(f"{i}. {title}")
+            print(f"   {url}")
+            if snippet:
+                print(f"   {snippet}")
+            print()
 
 
 if __name__ == "__main__":
