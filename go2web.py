@@ -5,6 +5,7 @@ import argparse
 import socket
 import re
 import ssl
+import urllib.parse
 
 _cache = {}
 
@@ -17,6 +18,7 @@ def build_parser():
     parser.add_argument("-h", dest="show_help", action="store_true", help="Show this help message and exit")
     parser.add_argument("-u", metavar="URL", help="Make an HTTP request to URL and print the response")
     parser.add_argument("-s", metavar="SEARCH_TERM", nargs="+", help="Search and print top 10 results. Append a number to fetch that result.")
+    parser.add_argument("--cache-demo", metavar="URL", help="Fetch URL twice to demonstrate in-memory cache")
     return parser
 
 
@@ -138,6 +140,13 @@ def decode_entities(text):
     return text
 
 def parse_search_results(html):
+    results = _parse_yahoo_results(html)
+    if results:
+        return results
+    return _parse_duckduckgo_results(html)
+
+
+def _parse_yahoo_results(html):
     results = []
     seen_urls = set()
 
@@ -162,7 +171,6 @@ def parse_search_results(html):
 
         url_match = re.search(r'RU=([^/]+)', href)
         if url_match:
-            import urllib.parse
             url = urllib.parse.unquote(url_match.group(1))
         else:
             url = href
@@ -182,6 +190,51 @@ def parse_search_results(html):
         seen_urls.add(url)
         results.append((title, url, snippet))
 
+        if len(results) == 10:
+            break
+
+    return results
+
+
+def _parse_duckduckgo_results(html):
+    results = []
+    seen_urls = set()
+
+    titles = re.findall(
+        r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+        html,
+        re.DOTALL,
+    )
+    snippets = re.findall(
+        r'<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>',
+        html,
+        re.DOTALL,
+    )
+
+    for idx, (href, title_html) in enumerate(titles):
+        title = decode_entities(re.sub(r'<[^>]+>', '', title_html).strip())
+        if not title:
+            continue
+
+        if href.startswith("//"):
+            href = "https:" + href
+
+        url = href
+        parsed = urllib.parse.urlparse(href)
+        if "duckduckgo.com" in parsed.netloc and parsed.path == "/l/":
+            target = urllib.parse.parse_qs(parsed.query).get("uddg")
+            if target and target[0]:
+                url = urllib.parse.unquote(target[0])
+
+        if not url.startswith("http") or url in seen_urls:
+            continue
+
+        snippet = ""
+        if idx < len(snippets):
+            snippet = decode_entities(re.sub(r'<[^>]+>', '', snippets[idx]).strip())
+
+        seen_urls.add(url)
+        results.append((title, url, snippet))
         if len(results) == 10:
             break
 
@@ -220,9 +273,17 @@ def strip_html(html):
 
 
 def search(term):
-    query = term.replace(" ", "+")
-    url = f"https://search.yahoo.com/search?p={query}&ei=UTF-8&nojs=1"
-    return fetch_url(url, extra_headers={"Cookie": "sB=v=1&pstaid=undefined"})
+    query = urllib.parse.quote_plus(term)
+
+    yahoo_url = f"https://search.yahoo.com/search?p={query}&ei=UTF-8&nojs=1"
+    raw = fetch_url(yahoo_url, extra_headers={"Cookie": "sB=v=1&pstaid=undefined"})
+    status, _, body = parse_response(raw)
+    if status.startswith("HTTP/1.1 200") and _parse_yahoo_results(body):
+        return raw
+
+    # Yahoo occasionally returns an error page to script-like traffic.
+    duckduckgo_url = f"https://html.duckduckgo.com/html/?q={query}"
+    return fetch_url(duckduckgo_url)
 
 
 def main():
@@ -294,6 +355,16 @@ def main():
                 if snippet:
                     print(f"   {snippet}")
                 print()
+    
+    if args.cache_demo:
+        print("--- First fetch ---")
+        raw = fetch_url(args.cache_demo)
+        status, headers, body = parse_response(raw)
+        print(f"Status: {status}")
+        print("--- Second fetch (cache) ---")
+        raw = fetch_url(args.cache_demo)
+        status, headers, body = parse_response(raw)
+        print(f"Status: {status}")
 
 
 if __name__ == "__main__":
