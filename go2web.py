@@ -5,9 +5,44 @@ import argparse
 import socket
 import re
 import ssl
+import os
+import json
+import hashlib
 import urllib.parse
 
 _cache = {}
+_CACHE_DIR = os.path.expanduser("~/.cache/go2web")
+
+
+def _cache_file_path(url):
+    digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
+    return os.path.join(_CACHE_DIR, f"{digest}.json")
+
+
+def _load_persistent_cache(url):
+    path = _cache_file_path(url)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if payload.get("url") == url and isinstance(payload.get("raw"), str):
+            return payload["raw"]
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+    return None
+
+
+def _save_persistent_cache(url, raw):
+    path = _cache_file_path(url)
+    os.makedirs(_CACHE_DIR, exist_ok=True)
+    payload = {"url": url, "raw": raw}
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except Exception:
+        # Cache write failures should not break network requests.
+        pass
 
 def build_parser():
     parser = argparse.ArgumentParser(
@@ -38,9 +73,17 @@ Examples:
 
 
 def fetch_url(url, max_redirects=5, extra_headers=None):
+    requested_url = url
+
     if url in _cache:
-        print(f"[cache hit] {url}", file=sys.stderr)
+        print(f"[cache hit] {url} (memory)", file=sys.stderr)
         return _cache[url]
+
+    cached_raw = _load_persistent_cache(url)
+    if cached_raw is not None:
+        _cache[url] = cached_raw
+        print(f"[cache hit] {url} (disk)", file=sys.stderr)
+        return cached_raw
 
     for _ in range(max_redirects):
         if url.startswith("https://"):
@@ -105,6 +148,9 @@ def fetch_url(url, max_redirects=5, extra_headers=None):
             continue
 
         _cache[url] = raw
+        _cache[requested_url] = raw
+        _save_persistent_cache(url, raw)
+        _save_persistent_cache(requested_url, raw)
         return raw
 
     print("Error: too many redirects")
